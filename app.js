@@ -1,4 +1,4 @@
-const firebaseConfig = {/*
+const firebaseConfig = {
     apiKey: "AIzaSyB12aswfy2OECEPvsAmh-nTVfMTon_uZ9w",
     authDomain: "sggtg-aa6d4.firebaseapp.com",
     databaseURL: "https://sggtg-aa6d4-default-rtdb.asia-southeast1.firebasedatabase.app",
@@ -6,13 +6,14 @@ const firebaseConfig = {/*
     storageBucket: "sggtg-aa6d4.firebasestorage.app",
     messagingSenderId: "951366047862",
     appId: "1:951366047862:web:a457674a4912e7714e2757",
-    measurementId: "G-M5HLWWY6TN" */
+    measurementId: "G-M5HLWWY6TN" /*
     apiKey: "AIzaSyCzMSEp324rtnTwtRLPq9hGxgdDsv4pS3c",
     authDomain: "locker-manage.firebaseapp.com",
     projectId: "locker-manage",
     storageBucket: "locker-manage.firebasestorage.app",
     messagingSenderId: "812684053866",
     appId: "1:812684053866:web:be21dc3859b3593d946913"
+    */
 
 };
 
