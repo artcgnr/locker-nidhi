@@ -1,10 +1,12 @@
 document.addEventListener('initAdmin', async () => {
     loadBranches();
     loadUsers();
+    loadResignedUsers();
     loadStats();
     loadDeclarations();
     initAdminEmergencyTransfer();
     initBackdateApproval();
+    if (window.loadAuditLogs) loadAuditLogs();
 
     const adminReportsBtn = document.querySelector('[data-target="admin-reports"]');
     if (adminReportsBtn) {
@@ -21,6 +23,16 @@ document.addEventListener('initAdmin', async () => {
         adminBackdateBtn.addEventListener('click', loadBackdateApprovals);
     }
 
+    const adminReturnedKeysBtn = document.querySelector('[data-target="admin-returned-keys"]');
+    if (adminReturnedKeysBtn) {
+        adminReturnedKeysBtn.addEventListener('click', loadReturnedKeys);
+    }
+
+    const adminResignedBtn = document.querySelector('[data-target="admin-resigned-users"]');
+    if (adminResignedBtn) {
+        adminResignedBtn.addEventListener('click', loadResignedUsers);
+    }
+
     const overviewDateInput = document.getElementById('admin-overview-date');
     if (overviewDateInput) {
         overviewDateInput.value = new Date().toISOString().split('T')[0];
@@ -29,11 +41,42 @@ document.addEventListener('initAdmin', async () => {
             loadDeclarations(e.target.value);
         });
     }
+
+    // Add change listeners to audit filters
+    ['audit-filter-action', 'audit-filter-from', 'audit-filter-to'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el && !el.dataset.listenerAdded) {
+            el.addEventListener('change', loadAuditLogs);
+            el.dataset.listenerAdded = "true";
+        }
+    });
+
+    // Admin Reports Filter
+    const reportFilterForm = document.getElementById('form-admin-filter-reports');
+    if (reportFilterForm) {
+        reportFilterForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const company = document.getElementById('admin-filter-company').value;
+            const branchId = document.getElementById('admin-filter-branch').value;
+            const fromDate = document.getElementById('admin-filter-from').value;
+            const toDate = document.getElementById('admin-filter-to').value;
+            loadAdminReports({ company, branchId, fromDate, toDate });
+        });
+    }
+
+    const reportClearBtn = document.getElementById('btn-admin-filter-clear');
+    if (reportClearBtn) {
+        reportClearBtn.addEventListener('click', () => {
+            document.getElementById('form-admin-filter-reports').reset();
+            loadAdminReports();
+        });
+    }
 });
 
 document.getElementById('form-add-branch').addEventListener('submit', async (e) => {
     e.preventDefault();
     const name = document.getElementById('branch-name').value;
+    const company = document.getElementById('branch-company').value;
     const lockerNumber = document.getElementById('branch-locker-number').value;
     const key1 = document.getElementById('branch-key1').value;
     const key2 = document.getElementById('branch-key2').value;
@@ -42,6 +85,7 @@ document.getElementById('form-add-branch').addEventListener('submit', async (e) 
     try {
         await window.db.collection("branches").add({
             name: name,
+            company: company,
             locker_number: lockerNumber,
             key1: key1,
             key2: key2,
@@ -94,6 +138,7 @@ async function loadBranches() {
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td><strong>${data.name}</strong></td>
+                <td>${data.company || '-'}</td>
                 <td>${data.locker_number || '-'}</td>
                 <td>${data.key1 || '-'}</td>
                 <td>${data.key2 || '-'}</td>
@@ -102,7 +147,7 @@ async function loadBranches() {
                 <td>₹${(data.outstanding_loan || 0).toLocaleString()}</td>
                 <td>${date}</td>
                 <td>
-                    <button class="btn btn-secondary btn-sm" onclick="openEditBranch('${docSnap.id}', '${data.name}', ${data.total_stock}, ${data.physical_cash}, ${data.outstanding_loan || 0}, '${data.locker_number || ''}', '${data.key1 || ''}', '${data.key2 || ''}')" title="Edit Branch">
+                    <button class="btn btn-secondary btn-sm" onclick="openEditBranch('${docSnap.id}', '${escapeHtml(data.name)}', '${escapeHtml(data.company || '')}', ${data.total_stock}, ${data.physical_cash}, ${data.outstanding_loan || 0}, '${escapeHtml(data.locker_number || '')}', '${escapeHtml(data.key1 || '')}', '${escapeHtml(data.key2 || '')}')" title="Edit Branch">
                         <i class="fa-solid fa-pen-to-square"></i> Edit
                     </button>
                 </td>
@@ -150,7 +195,7 @@ function updateUserFormLockerKey(branchId, lockerSelectId, keySelectId, currentU
 
     lockerSelect.innerHTML = `<option value="${branchData.locker_number}">${branchData.locker_number}</option>`;
 
-    keySelect.innerHTML = '';
+    keySelect.innerHTML = '<option value="">None / Remove Key</option>';
     if (branchData.key1 && (!window.assignedKeys || !window.assignedKeys.has(branchData.key1) || (currentUserId && window.currentEditingUserKey === branchData.key1))) {
         keySelect.innerHTML += `<option value="${branchData.key1}">${branchData.key1}</option>`;
     }
@@ -158,10 +203,7 @@ function updateUserFormLockerKey(branchId, lockerSelectId, keySelectId, currentU
         keySelect.innerHTML += `<option value="${branchData.key2}">${branchData.key2}</option>`;
     }
 
-    if (keySelect.innerHTML === '') {
-        keySelect.innerHTML = '<option value="" disabled selected>No keys available</option>';
-        keySelect.disabled = true;
-    }
+    // No longer disabling if empty, as "None / Remove Key" is always an option
 }
 
 // Add event listeners for branch select in new user form
@@ -225,10 +267,38 @@ document.getElementById('form-add-user').addEventListener('submit', async (e) =>
     window.hideLoader();
 });
 
+let showResignedUsers = false;
+
+window.toggleResignedUsers = () => {
+    showResignedUsers = !showResignedUsers;
+    const btn = document.getElementById('btn-toggle-users');
+    const title = document.getElementById('users-list-title');
+    const activeContainer = document.getElementById('active-users-container');
+    const resignedContainer = document.getElementById('resigned-users-container');
+
+    if (showResignedUsers) {
+        btn.classList.add('active');
+        btn.innerHTML = '<i class="fa-solid fa-users"></i> <span>View Active Users</span>';
+        title.textContent = 'Resigned Staff Members';
+        activeContainer.classList.add('hidden');
+        resignedContainer.classList.remove('hidden');
+        loadResignedUsers();
+    } else {
+        btn.classList.remove('active');
+        btn.innerHTML = '<i class="fa-solid fa-user-slash"></i> <span>View Resigned Users</span>';
+        title.textContent = 'User List';
+        resignedContainer.classList.add('hidden');
+        activeContainer.classList.remove('hidden');
+        loadUsers();
+    }
+};
+
 async function loadUsers() {
+    console.log("loadUsers started");
     try {
         const snapshot = await window.db.collection("users").get();
         const tbody = document.querySelector('#table-users tbody');
+        if (!tbody) return;
         tbody.innerHTML = '';
 
         const branchSnap = await window.db.collection("branches").get();
@@ -237,12 +307,17 @@ async function loadUsers() {
 
         snapshot.forEach(docSnap => {
             const data = docSnap.data();
-            const branchName = data.role === 'admin' ? 'All Branches (Admin)' : (branchMap[data.branch_id] || 'Unknown');
+            if (data.is_resigned) return; // Skip resigned
+
+            const branchName = data.role === 'admin' ? 'Admin' : (branchMap[data.branch_id] || data.branch_id || '-');
 
             let roleBadge = '';
             if (data.role === 'admin') roleBadge = '<span class="status-badge status-approved">Admin</span>';
             else if (data.role === 'user1') roleBadge = '<span class="status-badge status-pending" style="color:#3b82f6; background:rgba(59, 130, 246, 0.2)">User 1</span>';
             else if (data.role === 'user2') roleBadge = '<span class="status-badge status-pending" style="color:#8b5cf6; background:rgba(139, 92, 246, 0.2)">User 2</span>';
+            else roleBadge = '<span class="status-badge status-pending">Reserve</span>';
+
+            const statusBadge = '<span class="status-badge" style="background:#dcfce7; color:#15803d;">Active</span>';
 
             const keys = [];
             if (data.key1) keys.push(data.key1);
@@ -250,33 +325,46 @@ async function loadUsers() {
             const keyDisplay = keys.length ? keys.join(', ') : 'None';
 
             const tr = document.createElement('tr');
+            // Use safer onclick with escaped values
+            const safeName = escapeHtml(data.name).replace(/'/g, "\\'");
+            const safeRole = (data.role || '').replace(/'/g, "\\'");
+            const safeBranch = (data.branch_id || '').replace(/'/g, "\\'");
+            const safeKey1 = (data.key1 || '').replace(/'/g, "\\'");
+            const safeKey2 = (data.key2 || '').replace(/'/g, "\\'");
+
             tr.innerHTML = `
-                <td>${data.name || 'N/A'}</td>
-                <td>${data.locker_number || '-'}</td>
+                <td><strong>${escapeHtml(data.name)}</strong></td>
+                <td>${escapeHtml(data.locker_number || '-')}</td>
                 <td>${escapeHtml(keyDisplay)}</td>
-                <td>${data.email}</td>
+                <td>${escapeHtml(data.email)}</td>
                 <td>${roleBadge}</td>
-                <td>${branchName}</td>
+                <td>${escapeHtml(branchName)}</td>
+                <td>${statusBadge}</td>
                 <td>
-                    <button class="btn btn-secondary btn-sm" onclick="openEditUser('${docSnap.id}', '${escapeHtml(data.name || '')}', '${data.role || ''}', '${data.branch_id || ''}', '${data.key1 || ''}', '${data.key2 || ''}')" title="Edit User">
-                        <i class="fa-solid fa-pen-to-square"></i> Edit
+                    <button class="btn btn-secondary btn-sm" onclick="openEditUser('${docSnap.id}', '${safeName}', '${safeRole}', '${safeBranch}', '${safeKey1}', '${safeKey2}', false)" title="Edit User">
+                        <i class="fa-solid fa-pen-to-square"></i>
+                    </button>
+                    <button class="btn btn-warning btn-sm" onclick="resetUserPassword('${data.email}')" title="Reset Password">
+                        <i class="fa-solid fa-key"></i>
                     </button>
                 </td>
             `;
             tbody.appendChild(tr);
         });
+        console.log("loadUsers completed");
     } catch (error) {
         console.error("Error loading users:", error);
     }
 }
 
-window.openEditUser = (id, name, role, branchId, key1, key2) => {
+window.openEditUser = (id, name, role, branchId, key1, key2, isResigned = false) => {
     window.currentEditingUserId = id;
     window.currentEditingUserKey = key1;
 
     document.getElementById('edit-user-id').value = id;
     document.getElementById('edit-user-name').value = name;
     document.getElementById('edit-user-role').value = role;
+    document.getElementById('edit-user-status').value = isResigned ? 'resigned' : 'active';
 
     const branchSelect = document.getElementById('edit-user-branch');
     const newBranchSelect = document.getElementById('new-user-branch');
@@ -306,6 +394,8 @@ document.getElementById('form-edit-user').addEventListener('submit', async (e) =
     const branchId = document.getElementById('edit-user-branch').value;
     const lockerNumber = document.getElementById('edit-user-locker').value;
     const assignedKey = document.getElementById('edit-user-key').value;
+    const status = document.getElementById('edit-user-status').value;
+    const isResigned = (status === 'resigned');
 
     if (role !== 'admin' && !branchId) {
         return window.showToast("Please select a branch for non-admin users.", "error");
@@ -313,18 +403,30 @@ document.getElementById('form-edit-user').addEventListener('submit', async (e) =
 
     window.showLoader();
     try {
-        await window.db.collection("users").doc(id).update({
+        const updates = {
             name: name,
             role: role,
             branch_id: branchId || null,
             locker_number: lockerNumber || null,
-            key1: assignedKey || null,
-            key2: null
-        });
+            is_resigned: isResigned
+        };
+
+        if (isResigned) {
+            updates.key1 = null;
+            updates.key2 = null;
+            updates.resigned_at = firebase.firestore.FieldValue.serverTimestamp();
+        } else {
+            updates.key1 = assignedKey || null;
+            updates.key2 = null;
+        }
+
+        await window.db.collection("users").doc(id).update(updates);
+        window.logAuditEvent("Admin User Edit", "admin", `Updated user: ${name} (Status: ${status}, Role: ${role})`);
         window.showToast("User updated successfully!", "success");
         document.getElementById('modal-edit-user').classList.add('hidden');
         loadBranches();
         loadUsers();
+        loadResignedUsers();
     } catch (err) {
         window.showToast(err.message, "error");
     }
@@ -332,10 +434,10 @@ document.getElementById('form-edit-user').addEventListener('submit', async (e) =
 });
 
 async function loadStats(selectedDate = null) {
-    const grid = document.getElementById('admin-stats-grid');
+    const gridArt = document.getElementById('admin-stats-grid-art');
+    const gridNidhi = document.getElementById('admin-stats-grid-nidhi');
     try {
         const branchSnap = await window.db.collection("branches").get();
-        let totalBranches = branchSnap.size;
 
         let lastActiveDateStr = selectedDate || new Date().toISOString().split('T')[0];
 
@@ -351,97 +453,107 @@ async function loadStats(selectedDate = null) {
             if (overviewDateInput) overviewDateInput.value = lastActiveDateStr;
         }
 
-        let totalStock = 0;
-        let totalCash = 0;
-        let totalLoan = 0;
-
         const declarationsSnap = await window.db.collection("declarations").where("date", "==", lastActiveDateStr).get();
-
-        if (!declarationsSnap.empty) {
-            const totalsSnap = await window.db.collection("daily_totals").where("date", "==", lastActiveDateStr).get();
-
-            declarationsSnap.forEach(d => {
-                const data = d.data();
-                const branchData = branchSnap.docs.find(b => b.id === data.branch_id)?.data() || {};
-
-                let bStock = data.total_stock !== undefined ? data.total_stock : (branchData.total_stock || 0);
-                let bLoan = data.outstanding_loan !== undefined ? data.outstanding_loan : (branchData.outstanding_loan || 0);
-
-                const tDoc = totalsSnap.docs.find(t => t.data().branch_id === data.branch_id);
-                if (tDoc) {
-                    const tData = tDoc.data();
-                    if (tData.total_stock !== undefined) bStock = tData.total_stock;
-                    if (tData.outstanding_loan !== undefined) bLoan = tData.outstanding_loan;
-                }
-
-                totalStock += bStock;
-                totalLoan += bLoan;
-                totalCash += branchData.physical_cash || 0;
-            });
-        } else {
-            branchSnap.forEach(b => {
-                totalStock += b.data().total_stock || 0;
-                totalCash += b.data().physical_cash || 0;
-                totalLoan += b.data().outstanding_loan || 0;
-            });
-        }
-
-        let targetAppraised = 0;
-        let targetPending = 0;
-
+        const totalsSnap = await window.db.collection("daily_totals").where("date", "==", lastActiveDateStr).get();
         const appraisalSnap = await window.db.collection("daily_appraisals").get();
-        appraisalSnap.forEach(doc => {
-            const data = doc.data();
-            const txDate = data.timestamp ? data.timestamp.toDate().toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-            if (txDate === lastActiveDateStr && data.status === 'approved') {
-                targetAppraised += data.appraised || 0;
-                targetPending += data.not_appraised || 0;
-            }
-        });
 
-        grid.innerHTML = `
-            <div class="stat-card glass-panel" style="grid-column: 1 / -1; background: rgba(59, 130, 246, 0.1); border-left: 4px solid #3b82f6;">
-                <div class="stat-info" style="display:flex; justify-content:space-between; align-items:center;">
-                    <h4 style="margin:0; color:#fff;"><i class="fa-solid fa-calendar-day"></i> Showing Stats For:</h4>
-                    <p style="margin:0; font-size:1.2em; font-weight:700; color:#3b82f6;">${formatDateDisplay(lastActiveDateStr)}</p>
+        const buildGridHTML = (companyName) => {
+            let activeBranches = [];
+            branchSnap.forEach(b => {
+                if (b.data().company === companyName) {
+                    activeBranches.push(b);
+                }
+            });
+            let totalBranches = activeBranches.length;
+
+            let totalStock = 0;
+            let totalCash = 0;
+            let totalLoan = 0;
+
+            if (!declarationsSnap.empty) {
+                declarationsSnap.forEach(d => {
+                    const data = d.data();
+                    const branchData = branchSnap.docs.find(b => b.id === data.branch_id)?.data() || {};
+                    if (branchData.company !== companyName) return;
+
+                    let bStock = data.total_stock !== undefined ? data.total_stock : (branchData.total_stock || 0);
+                    let bLoan = data.outstanding_loan !== undefined ? data.outstanding_loan : (branchData.outstanding_loan || 0);
+
+                    const tDoc = totalsSnap.docs.find(t => t.data().branch_id === data.branch_id);
+                    if (tDoc) {
+                        const tData = tDoc.data();
+                        if (tData.total_stock !== undefined) bStock = tData.total_stock;
+                        if (tData.outstanding_loan !== undefined) bLoan = tData.outstanding_loan;
+                    }
+
+                    totalStock += bStock;
+                    totalLoan += bLoan;
+                    totalCash += branchData.physical_cash || 0;
+                });
+            } else {
+                activeBranches.forEach(b => {
+                    totalStock += b.data().total_stock || 0;
+                    totalCash += b.data().physical_cash || 0;
+                    totalLoan += b.data().outstanding_loan || 0;
+                });
+            }
+
+            let targetAppraised = 0;
+            let targetPending = 0;
+
+            appraisalSnap.forEach(doc => {
+                const data = doc.data();
+                const branchData = branchSnap.docs.find(b => b.id === data.branch_id)?.data();
+                if (!branchData || branchData.company !== companyName) return;
+
+                const txDate = data.timestamp ? data.timestamp.toDate().toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+                if (txDate === lastActiveDateStr && data.status === 'approved') {
+                    targetAppraised += data.appraised || 0;
+                    targetPending += data.not_appraised || 0;
+                }
+            });
+
+            return `
+                <div class="stat-card glass-panel">
+                    <div class="stat-icon"><i class="fa-solid fa-building"></i></div>
+                    <div class="stat-info">
+                        <h4>Active Branches</h4>
+                        <p>${totalBranches}</p>
+                    </div>
                 </div>
-            </div>
-            <div class="stat-card glass-panel">
-                <div class="stat-icon"><i class="fa-solid fa-building"></i></div>
-                <div class="stat-info">
-                    <h4>Active Branches</h4>
-                    <p>${totalBranches}</p>
+                <div class="stat-card glass-panel">
+                    <div class="stat-icon"><i class="fa-solid fa-check-circle text-success"></i></div>
+                    <div class="stat-info">
+                        <h4>Total Appraised</h4>
+                        <p>${targetAppraised}</p>
+                    </div>
                 </div>
-            </div>
-            <div class="stat-card glass-panel">
-                <div class="stat-icon"><i class="fa-solid fa-check-circle text-success"></i></div>
-                <div class="stat-info">
-                    <h4>Total Appraised</h4>
-                    <p>${targetAppraised}</p>
+                <div class="stat-card glass-panel">
+                    <div class="stat-icon"><i class="fa-solid fa-clock text-warning"></i></div>
+                    <div class="stat-info">
+                        <h4>Not Appraised</h4>
+                        <p>${targetPending}</p>
+                    </div>
                 </div>
-            </div>
-            <div class="stat-card glass-panel">
-                <div class="stat-icon"><i class="fa-solid fa-clock text-warning"></i></div>
-                <div class="stat-info">
-                    <h4>Not Appraised</h4>
-                    <p>${targetPending}</p>
+                <div class="stat-card glass-panel">
+                    <div class="stat-icon"><i class="fa-solid fa-money-bill-wave"></i></div>
+                    <div class="stat-info">
+                        <h4>Total Physical Cash</h4>
+                        <p>₹${totalCash.toLocaleString()}</p>
+                    </div>
                 </div>
-            </div>
-            <div class="stat-card glass-panel">
-                <div class="stat-icon"><i class="fa-solid fa-money-bill-wave"></i></div>
-                <div class="stat-info">
-                    <h4>Total Physical Cash</h4>
-                    <p>₹${totalCash.toLocaleString()}</p>
+                <div class="stat-card glass-panel">
+                    <div class="stat-icon"><i class="fa-solid fa-money-bill-trend-up text-success"></i></div>
+                    <div class="stat-info">
+                        <h4>Total Outstanding Loan</h4>
+                        <p>₹${totalLoan.toLocaleString()}</p>
+                    </div>
                 </div>
-            </div>
-            <div class="stat-card glass-panel">
-                <div class="stat-icon"><i class="fa-solid fa-money-bill-trend-up text-success"></i></div>
-                <div class="stat-info">
-                    <h4>Total Outstanding Loan</h4>
-                    <p>₹${totalLoan.toLocaleString()}</p>
-                </div>
-            </div>
-        `;
+            `;
+        };
+
+        if (gridArt) gridArt.innerHTML = buildGridHTML('ART LEASING');
+        if (gridNidhi) gridNidhi.innerHTML = buildGridHTML('CHEGANNUR NIDHI');
     } catch (error) {
         console.error("Error loading stats:", error);
     }
@@ -542,12 +654,18 @@ async function renderDeclarationTable(tableSelector, limit = null, filters = {})
 
     const branchSnap = await window.db.collection("branches").get();
     const branchMap = {};
-    branchSnap.forEach(b => branchMap[b.id] = b.data().name);
+    branchSnap.forEach(b => branchMap[b.id] = b.data());
 
     let parsedDocs = snap.docs.map(d => Object.assign(d.data(), { _id: d.id }));
     if (filters.branchId && filters.branchId !== 'all') {
         const filterId = String(filters.branchId);
         parsedDocs = parsedDocs.filter(d => String(d.branch_id) === filterId);
+    }
+    if (filters.company && filters.company !== 'all') {
+        parsedDocs = parsedDocs.filter(d => {
+            const bData = branchMap[d.branch_id];
+            return bData && bData.company === filters.company;
+        });
     }
     if (filters.fromDate) parsedDocs = parsedDocs.filter(d => d.date >= filters.fromDate);
     if (filters.toDate) parsedDocs = parsedDocs.filter(d => d.date <= filters.toDate);
@@ -556,6 +674,10 @@ async function renderDeclarationTable(tableSelector, limit = null, filters = {})
         const declaredBranchIds = new Set(parsedDocs.map(d => String(d.branch_id)));
         const targetDate = filters.fromDate;
         Object.keys(branchMap).forEach(branchId => {
+            const bData = branchMap[branchId];
+            if (filters.company && filters.company !== 'all' && bData.company !== filters.company) {
+                return;
+            }
             if (!declaredBranchIds.has(String(branchId))) {
                 if (!filters.branchId || filters.branchId === 'all' || filters.branchId === branchId) {
                     parsedDocs.push({ branch_id: branchId, date: targetDate, user1_status: "Pending", user2_status: "Pending", isDummy: true });
@@ -570,7 +692,8 @@ async function renderDeclarationTable(tableSelector, limit = null, filters = {})
     }
 
     const rows = await Promise.all(parsedDocs.map(async data => {
-        const branchName = branchMap[data.branch_id] || "Unknown";
+        const branchDataObj = branchMap[data.branch_id] || {};
+        const branchName = branchDataObj.name || "Unknown";
         if (data.isDummy) {
             return `<tr style="background: rgba(239, 68, 68, 0.02);">
                 <td style="vertical-align: top;"><strong>${escapeHtml(formatDateDisplay(data.date))}</strong></td>
@@ -600,6 +723,12 @@ async function renderDeclarationTable(tableSelector, limit = null, filters = {})
         const checkerInfo = data.user2_status === 'Signed' ? `<strong>${escapeHtml(data.user2_name || 'Signed')}</strong>${cKeyStr}` : '<span class="status-badge status-pending">Pending</span>';
         const finalStatus = data.user1_status === 'Signed' && data.user2_status === 'Signed' ? '<span class="status-badge status-approved">Complete</span>' : '<span class="status-badge status-pending">Incomplete</span>';
 
+        const actionHtml = data._id ? `
+            <button class="btn btn-icon btn-sm text-danger" onclick="deleteDeclaration('${data._id}')" title="Delete Declaration">
+                <i class="fa-solid fa-trash-can"></i>
+            </button>
+        ` : '-';
+
         return `<tr>
             <td style="vertical-align: top;"><strong>${escapeHtml(formatDateDisplay(data.date))}</strong></td>
             <td style="vertical-align: top;"><strong>${escapeHtml(branchName)}</strong></td>
@@ -612,15 +741,34 @@ async function renderDeclarationTable(tableSelector, limit = null, filters = {})
             <td>${totalStockInLocker}</td>
             <td>${formatCurrencyValue(outstandingLoan)}</td>
             <td style="vertical-align: top;">${finalStatus}</td>
+            <td style="vertical-align: top;">${actionHtml}</td>
         </tr>`;
     }));
     tbody.innerHTML = rows.join('');
     return rows.length;
 }
 
-window.openEditBranch = (id, name, stock, cash, loan, lockerNumber, key1, key2) => {
+window.deleteDeclaration = async (id) => {
+    if (!confirm("Are you sure you want to delete this declaration? This will unlock the day for the branch. Proceed?")) return;
+
+    window.showLoader();
+    try {
+        await window.db.collection("declarations").doc(id).delete();
+        window.logAuditEvent("Admin Declaration Deleted", "deletion", `Deleted declaration ID: ${id}`);
+        window.showToast("Declaration deleted successfully.", "success");
+        loadDeclarations();
+        loadAdminReports();
+        loadStats();
+    } catch (err) {
+        window.showToast(err.message, "error");
+    }
+    window.hideLoader();
+};
+
+window.openEditBranch = (id, name, company, stock, cash, loan, lockerNumber, key1, key2) => {
     document.getElementById('edit-branch-id').value = id;
     document.getElementById('edit-branch-name').textContent = name;
+    document.getElementById('edit-branch-company').value = company || '';
     document.getElementById('edit-branch-stock').value = stock;
     document.getElementById('edit-branch-cash').value = cash;
     document.getElementById('edit-branch-loan').value = loan;
@@ -633,6 +781,7 @@ window.openEditBranch = (id, name, stock, cash, loan, lockerNumber, key1, key2) 
 document.getElementById('form-edit-branch').addEventListener('submit', async (e) => {
     e.preventDefault();
     const id = document.getElementById('edit-branch-id').value;
+    const company = document.getElementById('edit-branch-company').value;
     const stock = parseInt(document.getElementById('edit-branch-stock').value) || 0;
     const cash = parseInt(document.getElementById('edit-branch-cash').value) || 0;
     const loan = parseInt(document.getElementById('edit-branch-loan').value) || 0;
@@ -641,7 +790,8 @@ document.getElementById('form-edit-branch').addEventListener('submit', async (e)
     const key2 = document.getElementById('edit-branch-key2').value;
     window.showLoader();
     try {
-        await window.db.collection("branches").doc(id).update({ total_stock: stock, physical_cash: cash, outstanding_loan: loan, locker_number: lockerNumber, key1: key1, key2: key2 });
+        await window.db.collection("branches").doc(id).update({ company: company, total_stock: stock, physical_cash: cash, outstanding_loan: loan, locker_number: lockerNumber, key1: key1, key2: key2 });
+        window.logAuditEvent("Admin Branch Edit", "admin", `Updated branch: ${id} (Stock: ${stock}, Cash: ${cash}, Loan: ${loan})`);
         window.showToast("Branch updated successfully!", "success");
         document.getElementById('modal-edit-branch').classList.add('hidden');
         loadBranches(); loadStats();
@@ -658,7 +808,8 @@ async function loadDeclarations(selectedDate = null) {
                 lastActiveDateStr = latestTx.docs[0].data().timestamp.toDate().toISOString().split('T')[0];
             }
         }
-        await renderDeclarationTable('#table-declarations', 20, { fromDate: lastActiveDateStr, toDate: lastActiveDateStr });
+        await renderDeclarationTable('#table-declarations-art', 20, { fromDate: lastActiveDateStr, toDate: lastActiveDateStr, company: 'ART LEASING' });
+        await renderDeclarationTable('#table-declarations-nidhi', 20, { fromDate: lastActiveDateStr, toDate: lastActiveDateStr, company: 'CHEGANNUR NIDHI' });
     } catch (err) { console.error(err); }
 }
 
@@ -751,6 +902,115 @@ async function loadAdminKTUsers(branchId, selectId) {
     } catch (err) { console.error(err); }
 }
 
+async function loadReturnedKeys() {
+    window.showLoader();
+    try {
+        console.log("Loading returned keys...");
+        const snap = await window.db.collection("key_transfers").get();
+
+        const tbody = document.querySelector('#table-admin-returned-keys tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        const branchSnap = await window.db.collection("branches").get();
+        const branchMap = {};
+        branchSnap.forEach(b => branchMap[b.id] = b.data().name || b.id);
+
+        const usersSnap = await window.db.collection("users").get();
+        const usersMap = {};
+        usersSnap.forEach(u => usersMap[u.id] = u.data());
+
+        let count = 0;
+        snap.forEach(docSnap => {
+            const data = docSnap.data();
+            if (data.receiver_id !== 'ADMIN' || data.status !== 'pending') return;
+
+            count++;
+            const branchName = branchMap[data.branch_id] || data.branch_id;
+            const userData = usersMap[data.sender_id] || {};
+            const role = userData.role || 'N/A';
+            const dt = data.created_at ? data.created_at.toDate().toLocaleString('en-GB') : 'Just now';
+
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${dt}</td>
+                <td><strong>${escapeHtml(branchName)}</strong></td>
+                <td><strong>${escapeHtml(data.sender_name)}</strong></td>
+                <td><span class="status-badge" style="background:rgba(0,0,0,0.05); color:#666;">${role}</span></td>
+                <td><span class="text-primary" style="font-weight:600;">${escapeHtml(data.key_number)}</span></td>
+                <td>${escapeHtml(data.reason || '-')}</td>
+                <td>
+                    <button class="btn btn-success btn-sm" onclick="acceptResignationKey('${docSnap.id}', '${data.sender_id}', '${escapeHtml(data.key_number)}')">
+                        <i class="fa-solid fa-check"></i> Accept & Clear Key
+                    </button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        if (count === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding: 20px; color: #888;">No pending key returns.</td></tr>';
+        }
+        console.log(`Found ${count} pending key returns.`);
+    } catch (err) {
+        console.error("Error loading returned keys:", err);
+        window.showToast("Error loading returned keys", "error");
+    }
+    window.hideLoader();
+}
+
+window.acceptResignationKey = async (transferId, userId, keyNumber) => {
+    if (!confirm(`Are you sure you want to accept this key (${keyNumber}) and clear it from the user's profile?`)) return;
+
+    window.showLoader();
+    try {
+        const userDoc = await window.db.collection("users").doc(userId).get();
+        if (!userDoc.exists) {
+            throw new Error("User not found");
+        }
+        const userData = userDoc.data();
+        const updates = {
+            is_resigned: true,
+            resigned_at: firebase.firestore.FieldValue.serverTimestamp(),
+            locker_number: null
+        };
+        if (userData.key1 === keyNumber) updates.key1 = null;
+        if (userData.key2 === keyNumber) updates.key2 = null;
+
+        await window.db.collection("users").doc(userId).update(updates);
+        console.log(`User ${userId} marked as resigned.`);
+
+        await window.db.collection("key_transfers").doc(transferId).update({
+            status: 'accepted',
+            accepted_at: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        console.log(`Transfer ${transferId} marked as accepted.`);
+
+        window.showToast("Key accepted and staff marked as resigned.", "success");
+
+        // Explicitly refresh all views
+        await loadReturnedKeys();
+        await loadUsers();
+        await loadResignedUsers();
+        await loadBranches();
+
+        // Prompt to add new user
+        if (confirm("Staff has resigned and key is now available. Would you like to add a new user to this branch now?")) {
+            const transferDoc = await window.db.collection("key_transfers").doc(transferId).get();
+            const branchId = transferDoc.data().branch_id;
+
+            document.getElementById('modal-add-user').classList.remove('hidden');
+            const branchSelect = document.getElementById('new-user-branch');
+            branchSelect.value = branchId;
+            updateUserFormLockerKey(branchId, 'new-user-locker', 'new-user-key');
+        }
+    } catch (err) {
+        console.error("Acceptance error:", err);
+        window.showToast(err.message, "error");
+    }
+    window.hideLoader();
+};
+
 async function loadAdminKeyHoldingsReport(filters = {}) {
     window.showLoader();
     try {
@@ -781,7 +1041,7 @@ async function loadAdminKeyHoldingsReport(filters = {}) {
             const returnedAt = data.returned_at ? data.returned_at.toDate() : null;
 
             if (acceptedAt && acceptedAt <= targetDate) {
-                const isActiveAtDate = (data.status === 'accepted' || data.status === 'returned') && (!returnedAt || returnedAt > targetDate);
+                const isActiveAtDate = (data.status === 'accepted' || data.status === 'returned' || data.status === 'pending') && (!returnedAt || returnedAt > targetDate);
 
                 if (isActiveAtDate) {
                     const receiverUser = users.find(u => String(u.id) === String(data.receiver_id));
@@ -796,9 +1056,17 @@ async function loadAdminKeyHoldingsReport(filters = {}) {
                     }
 
                     if (senderUser) {
+                        let displayName = data.receiver_name || 'Unknown';
+                        let isResignation = data.transfer_type === 'resignation' || data.receiver_id === 'ADMIN';
+
+                        if (isResignation) {
+                            displayName = 'System Admin (Returned)';
+                        }
+
                         senderUser.lentKeys.push({
                             key_number: String(data.key_number || '').trim().toUpperCase(),
-                            receiver_name: receiverUser ? receiverUser.name : (data.receiver_name || 'Unknown')
+                            receiver_name: displayName,
+                            isResignation: isResignation
                         });
                     }
                 } else if (data.transfer_type === 'permanent' && data.status === 'accepted') {
@@ -836,7 +1104,7 @@ async function loadAdminKeyHoldingsReport(filters = {}) {
                     const lentEntries = user.lentKeys.filter(lk => lk.key_number === searchKey);
                     const lent = lentEntries.length > 0 ? lentEntries[lentEntries.length - 1] : null;
 
-                    const keyData = { number: k, assignedTo: user.name, role: user.role, currentlyWith: lent ? lent.receiver_name : user.name, isLent: !!lent };
+                    const keyData = { number: k, assignedTo: user.name, role: user.role, currentlyWith: lent ? lent.receiver_name : user.name, isLent: !!lent, isResignation: lent ? lent.isResignation : false };
                     if (!key1Info && (user.role === 'user1' || !key2Info)) key1Info = keyData;
                     else if (!key2Info && (user.role === 'user2' || key1Info.number !== k)) key2Info = keyData;
                     else otherKeys.push(keyData);
@@ -867,7 +1135,16 @@ async function loadAdminKeyHoldingsReport(filters = {}) {
 
             if (!key1Info && !key2Info && otherKeys.length === 0 && warnings.length === 0) return;
             const formatKey = (info) => info ? `<strong>${escapeHtml(info.number)}</strong><br><small class="text-muted">Assigned: ${escapeHtml(info.assignedTo)}</small>` : '<span class="text-muted">None</span>';
-            const formatHolder = (info) => info ? (info.isLent ? `<span class="text-warning fw-bold"><i class="fa-solid fa-hand-holding-hand"></i> ${escapeHtml(info.currentlyWith)}</span>` : `<span>${escapeHtml(info.currentlyWith)}</span>`) : '<span class="text-muted">-</span>';
+            const formatHolder = (info) => {
+                if (!info) return '<span class="text-muted">-</span>';
+                if (info.isResignation) {
+                    return `<span class="status-badge" style="background:#ef4444; color:#fff; font-size:0.8em;"><i class="fa-solid fa-building-shield"></i> ${escapeHtml(info.currentlyWith)}</span>`;
+                }
+                if (info.isLent) {
+                    return `<span class="text-warning fw-bold"><i class="fa-solid fa-hand-holding-hand"></i> ${escapeHtml(info.currentlyWith)}</span>`;
+                }
+                return `<span>${escapeHtml(info.currentlyWith)}</span>`;
+            };
             let detailsHtml = otherKeys.map(k => `<span>${escapeHtml(k.number)} assigned to ${escapeHtml(k.assignedTo)}${k.isLent ? ' (Lent to ' + escapeHtml(k.currentlyWith) + ')' : ''}</span><br>`).join('') + warnings.join('');
             const tr = document.createElement('tr');
             tr.innerHTML = `<td><strong>${escapeHtml(branchMap[branchId] || branchId)}</strong></td><td>${formatKey(key1Info)}</td><td>${formatHolder(key1Info)}</td><td>${formatKey(key2Info)}</td><td>${formatHolder(key2Info)}</td><td>${detailsHtml || '-'}</td>`;
@@ -1082,4 +1359,124 @@ window.deleteBackdateApproval = async (id) => {
     }
     window.hideLoader();
 };
+
+async function loadResignedUsers() {
+    window.showLoader();
+    try {
+        console.log("Loading resigned users...");
+        const snap = await window.db.collection("users").get();
+
+        const tbody = document.querySelector('#table-resigned-users tbody');
+        if (!tbody) {
+            console.error("Resigned users table body not found!");
+            window.hideLoader();
+            return;
+        }
+        tbody.innerHTML = '';
+
+        const branchSnap = await window.db.collection("branches").get();
+        const branchMap = {};
+        branchSnap.forEach(b => branchMap[b.id] = b.data().name || b.id);
+
+        let count = 0;
+        snap.forEach(docSnap => {
+            const data = docSnap.data();
+            if (!data.is_resigned) return;
+
+            count++;
+            // Try to get branch name from map, then from the user record directly if stored, then ID
+            const branchName = data.role === 'admin' ? 'N/A' : (branchMap[data.branch_id] || data.branch_name || data.branch_id || '-');
+            const resignedDt = data.resigned_at ? data.resigned_at.toDate().toLocaleString('en-GB') : 'N/A';
+
+            const tr = document.createElement('tr');
+            // Use safer onclick with escaped values
+            const safeName = escapeHtml(data.name).replace(/'/g, "\\'");
+            const safeRole = (data.role || '').replace(/'/g, "\\'");
+            const safeBranch = (data.branch_id || '').replace(/'/g, "\\'");
+            const safeKey1 = (data.key1 || '').replace(/'/g, "\\'");
+            const safeKey2 = (data.key2 || '').replace(/'/g, "\\'");
+
+            tr.innerHTML = `
+                <td><strong>${escapeHtml(data.name)}</strong></td>
+                <td>${escapeHtml(data.email)}</td>
+                <td><span class="status-badge" style="background:rgba(0,0,0,0.05); color:#666;">${data.role}</span></td>
+                <td>${escapeHtml(branchName)}</td>
+                <td>${resignedDt}</td>
+                <td>
+                    <button class="btn btn-secondary btn-sm" onclick="openEditUser('${docSnap.id}', '${safeName}', '${safeRole}', '${safeBranch}', '${safeKey1}', '${safeKey2}', true)" title="View/Edit Details">
+                        <i class="fa-solid fa-eye"></i> View
+                    </button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        if (count === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding: 20px; color: #888;">No resigned users found.</td></tr>';
+        }
+        console.log(`Found ${count} resigned users.`);
+    } catch (err) {
+        console.error("Error loading resigned users:", err);
+        window.showToast("Error loading resigned users", "error");
+    }
+    window.hideLoader();
+}
+
+async function loadAuditLogs() {
+    window.showLoader();
+    try {
+        const typeFilter = document.getElementById('audit-filter-action').value;
+        const fromDateStr = document.getElementById('audit-filter-from').value;
+        const toDateStr = document.getElementById('audit-filter-to').value;
+
+        let query = window.db.collection("audit_logs").orderBy("timestamp", "desc").limit(200);
+
+        if (typeFilter && typeFilter !== 'all') {
+            query = query.where("type", "==", typeFilter);
+        }
+
+        const snap = await query.get();
+        const tbody = document.querySelector('#table-audit-logs tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        if (snap.empty) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding: 20px; color: #888;">No audit logs found.</td></tr>';
+            window.hideLoader();
+            return;
+        }
+
+        let logs = snap.docs.map(doc => doc.data());
+
+        // Client-side date filtering
+        if (fromDateStr) {
+            const fDate = new Date(fromDateStr); fDate.setHours(0, 0, 0, 0);
+            logs = logs.filter(l => l.timestamp && l.timestamp.toDate() >= fDate);
+        }
+        if (toDateStr) {
+            const tDate = new Date(toDateStr); tDate.setHours(23, 59, 59, 999);
+            logs = logs.filter(l => l.timestamp && l.timestamp.toDate() <= tDate);
+        }
+
+        tbody.innerHTML = logs.map(data => {
+            const ts = data.timestamp ? data.timestamp.toDate().toLocaleString('en-GB') : 'N/A';
+            const actionBadge = `<span class="status-badge" style="background: rgba(79, 240, 47, 0.75); color: #333; font-size:0.8em; margin-right:5px;">${data.type.toUpperCase()}</span>`;
+            return `<tr>
+                <td style="font-size: 0.85em; white-space: nowrap; color: #ffffffff;">${ts}</td>
+                <td><strong>${escapeHtml(data.user_name)}</strong><br><small class="text-muted" style="font-size:0.7em;">${(data.uid || '').substring(0, 8)}</small></td>
+                <td><span style="font-size:0.85em;">${escapeHtml(data.user_role)}</span></td>
+                <td>${actionBadge} <strong>${escapeHtml(data.action)}</strong></td>
+                <td style="font-size: 0.85em; color: #ffffffff;">${escapeHtml(data.details)}</td>
+            </tr>`;
+        }).join('');
+
+    } catch (err) {
+        console.error("Error loading audit logs:", err);
+    }
+    window.hideLoader();
+}
+
+window.loadAuditLogs = loadAuditLogs;
+
+
 

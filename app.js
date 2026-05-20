@@ -1,20 +1,10 @@
 const firebaseConfig = {
-    apiKey: "AIzaSyB12aswfy2OECEPvsAmh-nTVfMTon_uZ9w",
-    authDomain: "sggtg-aa6d4.firebaseapp.com",
-    databaseURL: "https://sggtg-aa6d4-default-rtdb.asia-southeast1.firebasedatabase.app",
-    projectId: "sggtg-aa6d4",
-    storageBucket: "sggtg-aa6d4.firebasestorage.app",
-    messagingSenderId: "951366047862",
-    appId: "1:951366047862:web:a457674a4912e7714e2757",
-    measurementId: "G-M5HLWWY6TN" /*
-    apiKey: "AIzaSyCzMSEp324rtnTwtRLPq9hGxgdDsv4pS3c",
-    authDomain: "locker-manage.firebaseapp.com",
-    projectId: "locker-manage",
-    storageBucket: "locker-manage.firebasestorage.app",
-    messagingSenderId: "812684053866",
-    appId: "1:812684053866:web:be21dc3859b3593d946913"
-    */
-
+   apiKey: "AIzaSyD5s48njPoHrlurLCAjrdmYtVds_X_wIa4",
+    authDomain: "art-locker-manage.firebaseapp.com",
+    projectId: "art-locker-manage",
+    storageBucket: "art-locker-manage.firebasestorage.app",
+    messagingSenderId: "326483341533",
+    appId: "1:326483341533:web:53409add5b2fb0001f6b34"
 };
 
 window.firebaseConfig = firebaseConfig;
@@ -41,6 +31,23 @@ window.auth = auth;
 // UI Utilities
 window.showLoader = () => document.getElementById('loader').classList.remove('hidden');
 window.hideLoader = () => document.getElementById('loader').classList.add('hidden');
+
+window.logAuditEvent = async (action, type, details) => {
+    try {
+        await window.db.collection("audit_logs").add({
+            timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+            uid: window.currentUser ? window.currentUser.uid : 'system',
+            user_name: window.currentUserData ? window.currentUserData.name : (window.currentUser ? window.currentUser.email : 'System'),
+            user_role: window.currentUserData ? window.currentUserData.role : 'N/A',
+            action: action,
+            type: type, // login, logout, declaration, deletion, admin, security
+            details: details,
+            branch_id: (window.currentUserData && window.currentUserData.branch_id) ? window.currentUserData.branch_id : null
+        });
+    } catch (err) {
+        console.error("Audit log error:", err);
+    }
+};
 
 window.showToast = (message, type = 'info') => {
     const container = document.getElementById('toast-container');
@@ -197,15 +204,22 @@ if (isConfigured) {
                 if (userDoc.exists) {
                     window.currentUserData = userDoc.data();
 
+                    if (window.currentUserData.is_resigned) {
+                        window.showToast("Your access has been revoked due to resignation.", "error");
+                        auth.signOut();
+                        return;
+                    }
+
                     if (window.currentUserData.role !== 'admin') {
                         const contexts = [];
 
-                        // 1. Check if user SENT a key (Access Suspended)
+                        // 1. Check if user SENT a key TEMPORARILY (Access Suspended)
                         let suspended = false;
                         try {
                             const sentKeysSnap = await db.collection('key_transfers')
                                 .where('sender_id', '==', user.uid)
                                 .where('status', '==', 'accepted')
+                                .where('transfer_type', '==', 'temporary')
                                 .get();
 
                             if (!sentKeysSnap.empty) {
@@ -277,6 +291,7 @@ if (isConfigured) {
                     }
 
                     setupDashboard(window.currentUserData);
+                    window.logAuditEvent("User Login", "login", `Logged in to role: ${window.currentUserData.role}`);
                 } else {
                     const allUsers = await db.collection("users").get();
                     if (allUsers.empty) {
@@ -290,6 +305,7 @@ if (isConfigured) {
                         window.currentUserData = newAdminData;
                         window.currentUserData.active_roles = ['admin'];
                         setupDashboard(window.currentUserData);
+                        window.logAuditEvent("Initial Admin Setup", "admin", "First account auto-created as Admin");
                         window.showToast("First account automatically set as Admin.", "success");
                     } else {
                         window.showToast("User record not found in database. Contact your Admin.", "error");
@@ -303,6 +319,9 @@ if (isConfigured) {
                 auth.signOut();
             }
         } else {
+            if (window.currentUser) {
+                window.logAuditEvent("User Logout", "logout", "Session ended");
+            }
             window.currentUser = null;
             window.currentUserData = null;
             showLogin();
@@ -454,3 +473,38 @@ function formatDateDisplay(dateStr) {
     }
     return dateStr;
 }
+
+// Mobile Sidebar Toggle
+document.addEventListener('DOMContentLoaded', () => {
+    const menuToggle = document.getElementById('menu-toggle');
+    const sidebar = document.querySelector('.sidebar');
+    const overlay = document.getElementById('sidebar-overlay');
+
+    const toggleSidebar = (show) => {
+        if (show === undefined) show = !sidebar.classList.contains('active');
+
+        if (show) {
+            sidebar.classList.add('active');
+            overlay.classList.add('active');
+            menuToggle.querySelector('i').classList.replace('fa-bars', 'fa-times');
+        } else {
+            sidebar.classList.remove('active');
+            overlay.classList.remove('active');
+            menuToggle.querySelector('i').classList.replace('fa-times', 'fa-bars');
+        }
+    };
+
+    if (menuToggle && sidebar && overlay) {
+        menuToggle.addEventListener('click', () => toggleSidebar());
+        overlay.addEventListener('click', () => toggleSidebar(false));
+
+        // Close sidebar when clicking a nav item on mobile
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', () => {
+                if (window.innerWidth <= 768) {
+                    toggleSidebar(false);
+                }
+            });
+        });
+    }
+});
